@@ -102,3 +102,19 @@ The script automatically generates 4 tabs:
 - **Settings:** Every change in target temperature (Setpoints).
 - **Call For Heat:** Boiler activity and intensity levels.
 - **Weather:** Sunlight and outdoor temperature logs.
+
+## 🔧 Maintenance & Troubleshooting
+
+### Resetting the History Start Point
+If you want the script to "forget" its progress and restart the historical recovery from your `HISTORY_LIMIT_DATE`:
+
+1.  **Via Code:** Run the `resetHistoryProgress` function from the Apps Script editor.
+2.  **Via Settings:** - Click the **Gear icon** (Project Settings).
+    - Scroll to **Script Properties**.
+    - Delete the entry for `LAST_RECOVERED_DATE`.
+
+### Handling Duplicates & Sorting
+The script is now "Smart." It automatically:
+- **Filters Boundaries:** Skips data points from the previous day that Tado includes as buffers.
+- **Prevents Duplicates:** Checks if a Date/Time already exists before writing.
+- **Auto-Sorts:** Keeps your sheets in perfect chronological order regardless of when data is synced.
