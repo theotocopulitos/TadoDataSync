@@ -6,7 +6,7 @@ const AUTH_CONFIG = {
   CLIENT_ID: "1bb50063-6b0c-4d11-bd99-387f4a91cc46", 
   SCOPE: "home.user offline_access",
   // PASTE THE CODE FROM STEP 1 HERE:
-  DEVICE_CODE: "dI7EsnUB4MswNJMT9ymGR65ySzlARvKl2PjWPpjIXxM" 
+  DEVICE_CODE: "PASTE_YOUR_CODE_HERE_FROM_STEP_1" 
 };
 
 /**
