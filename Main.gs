@@ -1,13 +1,13 @@
 /** * TADO DATA SYNC - UNIFIED SHEET VERSION **/
 const CONFIG = {
-  HOME_ID: 1111111, // PUT YOUR OWN ID FROM Auth.gs
-  ZONE_ID: 1, // ONLY 1 ZONE FOR THE TIME BEING
-  ZONE_NAME: "Salón", // FILL WITH YOUR ZONE NAME
+  HOME_ID: 1475261,
+  ZONE_ID: 1,
+  ZONE_NAME: "Salón",
   CLIENT_ID: "1bb50063-6b0c-4d11-bd99-387f4a91cc46",
-  INITIAL_REFRESH_TOKEN: "FILL_WITH_YOUR_REFRESH_TOKEN_FROM_Auth.gs",
-  
+  INITIAL_REFRESH_TOKEN: "uhwFWomaDQCGWEto6Z8FAMGqvdD2iHQ_BtHqZHjyP1gUbbtv33InRMvbRD1T6OST", // Cámbialo por el que obtuviste
+   
   HISTORY_LIMIT_DATE: "2024-01-28",
-  DAYS_PER_HISTORY_BATCH: 15, // RECOMMENDED BETWEEN 7 - 20 
+  DAYS_PER_HISTORY_BATCH: 15, 
   TIMEZONE: "GMT+1",
   DATE_FORMAT: "yyyy-MM-dd",
   TIME_FORMAT: "HH:mm:ss"
@@ -19,8 +19,10 @@ const CONFIG = {
 function dailySync() {
   const yesterday = new Date(new Date().getTime() - 24 * 60 * 60 * 1000);
   const dateStr = Utilities.formatDate(yesterday, CONFIG.TIMEZONE, CONFIG.DATE_FORMAT);
+  console.log("Iniciando dailySync para la fecha: " + dateStr); // <--- AÑADIR ESTO
   processAndSave(dateStr, "TOP");
 }
+
 
 /**
  * HISTORICAL RECOVERY
@@ -119,15 +121,40 @@ function processAndSave(dateStr, mode) {
 
 /** --- UTILS --- **/
 
-function saveToSheet(ss, name, headers, rows, mode) {
-  if (rows.length === 0) return;
+function saveToSheet(ss, name, headers, newRows) {
+  if (newRows.length === 0) return;
   let sheet = ss.getSheetByName(name) || ss.insertSheet(name);
-  if (sheet.getLastRow() === 0) sheet.appendRow(headers);
-  if (mode === "TOP") {
-    sheet.insertRowsAfter(1, rows.length);
-    sheet.getRange(2, 1, rows.length, rows[0].length).setValues(rows);
+  
+  if (sheet.getLastRow() === 0) {
+    sheet.appendRow(headers);
+  }
+
+  const lastRow = sheet.getLastRow();
+  let existingKeys = new Set();
+  
+  if (lastRow > 1) {
+    // Obtenemos las claves existentes para no duplicar
+    const existingData = sheet.getRange(1, 3, lastRow, 2).getValues(); // Columnas 3 (Date) y 4 (Time)
+    existingKeys = new Set(existingData.map(r => r[0] + "|" + r[1])); 
+  }
+
+  const filteredRows = newRows.filter(r => !existingKeys.has(r[2] + "|" + r[3]));
+
+  if (filteredRows.length > 0) {
+    // Insertamos al final
+    sheet.getRange(sheet.getLastRow() + 1, 1, filteredRows.length, filteredRows[0].length).setValues(filteredRows);
+    
+    // ORDENADO: Fecha (Col 3) Descendente, Hora (Col 4) Descendente
+    // Esto pondrá lo más nuevo (hoy/ayer) arriba del todo.
+    const lastRowUpdated = sheet.getLastRow();
+    sheet.getRange(2, 1, lastRowUpdated - 1, sheet.getLastColumn()).sort([
+      {column: 3, ascending: false}, 
+      {column: 4, ascending: false}
+    ]);
+    
+    console.log("✅ Insertadas " + filteredRows.length + " filas nuevas en " + name);
   } else {
-    sheet.getRange(sheet.getLastRow() + 1, 1, rows.length, rows[0].length).setValues(rows);
+    console.log("ℹ️ No hay datos nuevos para añadir en " + name);
   }
 }
 
@@ -155,6 +182,97 @@ function resetHistoryProgress() {
   PropertiesService.getScriptProperties().deleteProperty("LAST_RECOVERED_DATE");
   console.log("✅ History progress has been reset. Next run will start from your current target date.");
 }
-  }
-  throw new Error("Auth Error: " + response.getContentText());
+
+
+
+
+
+
+
+
+
+
+/**
+ * --- UNIVERSAL CLEANUP TOOLS WITH DETAILED LOGGING AND CELL REFERENCES ---
+ */
+
+function cleanAllSheetsDryRun() {
+  runUniversalCleanup(true);
+}
+
+function cleanAllSheetsEffective() {
+  runUniversalCleanup(false);
+}
+
+/**
+ * --- UNIVERSAL CLEANUP TOOLS (VERSION CON LOGS DE FILA DETALLADOS) ---
+ */
+
+function runUniversalCleanup(isDryRun) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheetsConfig = [
+    // CONFIGURACIÓN PARA EL PRIMER CASO: FECHA > HORA
+    { name: "Measured Data", keyCols: [2, 3], sortCols: [{col: 3, asc: false}, {col: 4, asc: false}] },
+    { name: "Settings",      keyCols: [2, 3], sortCols: [{col: 3, asc: false}, {col: 4, asc: false}] },
+    { name: "Call For Heat", keyCols: [2, 3], sortCols: [{col: 3, asc: false}, {col: 4, asc: false}] },
+    { name: "Weather",       keyCols: [1, 2], sortCols: [{col: 2, asc: false}, {col: 3, asc: false}] }
+  ];
+
+  sheetsConfig.forEach(conf => {
+    const sheet = ss.getSheetByName(conf.name);
+    if (!sheet) return;
+
+    const range = sheet.getDataRange();
+    const fullData = range.getValues();
+    if (fullData.length <= 1) return;
+
+    const headers = fullData[0];
+    const dataRows = fullData.slice(1);
+    
+    const seenKeys = new Map();
+    const uniqueRows = [];
+    const duplicatesLog = {};
+
+    dataRows.forEach((row, index) => {
+      const currentRowNum = index + 2;
+      
+      const keyParts = conf.keyCols.map(idx => {
+        let val = row[idx];
+        if (val instanceof Date) {
+          let format = (idx === 2 || (conf.name === "Weather" && idx === 1)) ? "yyyy-MM-dd" : "HH:mm:ss";
+          return Utilities.formatDate(val, CONFIG.TIMEZONE, format);
+        }
+        return String(val).trim(); 
+      });
+      
+      const key = keyParts.join(" | ");
+
+      if (!key || key === " | ") {
+        uniqueRows.push(row);
+        return;
+      }
+
+      if (!seenKeys.has(key)) {
+        seenKeys.set(key, currentRowNum);
+        uniqueRows.push(row);
+      } else {
+        if (!duplicatesLog[key]) {
+          duplicatesLog[key] = { kept: seenKeys.get(key), removed: [] };
+        }
+        duplicatesLog[key].removed.push(currentRowNum);
+      }
+    });
+
+    if (!isDryRun && uniqueRows.length > 0) {
+      sheet.clear(); 
+      const finalOutput = [headers, ...uniqueRows];
+      sheet.getRange(1, 1, finalOutput.length, headers.length).setValues(finalOutput);
+      
+      // APLICACIÓN DEL ORDENADO CORRECTO
+      const sortCriteria = conf.sortCols.map(s => ({column: s.col + 1, ascending: s.asc}));
+      sheet.getRange(2, 1, uniqueRows.length, headers.length).sort(sortCriteria);
+      
+      console.log(`✅ [${conf.name}] Ordenada por Día y luego por Hora.`);
+    }
+  });
 }
