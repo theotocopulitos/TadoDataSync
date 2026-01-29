@@ -52,86 +52,80 @@ function historicalSync() {
  * UPDATED CORE PROCESSING LOGIC (With Boundary Filtering)
  */
 function processAndSave(dateStr, mode) {
+  // USAMOS TU FUNCIÓN REAL: getAccessToken
   const token = getAccessToken();
+  
+  // Llamada a fetchTadoData con la fecha y el token [cite: 10, 40]
   const data = fetchTadoData(dateStr, token);
-  if (!data) return;
+  if (!data) return; 
 
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   
-  const temps = data.measuredData?.insideTemperature?.dataPoints || [];
-  const hums = data.measuredData?.humidity?.dataPoints || [];
-  const settings = data.settings?.dataIntervals || [];
-  const heat = data.callForHeat?.dataIntervals || [];
-  const weather = data.weather?.condition?.dataIntervals || [];
-  const solar = data.weather?.solarIntensity?.dataPoints || [];
+  const temps = data.measuredData?.insideTemperature?.dataPoints || []; 
+  const hums = data.measuredData?.humidity?.dataPoints || []; 
+  const settings = data.settings?.dataIntervals || []; 
+  const heat = data.callForHeat?.dataIntervals || []; 
+  const weather = data.weather?.condition?.dataIntervals || []; 
+  const solar = data.weather?.solarIntensity?.dataPoints || []; 
+  
   const toMs = (iso) => new Date(iso).getTime();
+  const currentProcessingDate = new Date(dateStr).toDateString(); 
 
-  // Define the boundaries of the "Current Processing Date"
-  const currentProcessingDate = new Date(dateStr).toDateString();
-
-  // 1. GENERATE MASTER SHEET (With Date Validation)
+  // 1. GENERATE MASTER SHEET
   const unifiedRows = temps
-    .filter(p => new Date(p.timestamp).toDateString() === currentProcessingDate) // SKIP points from yesterday/tomorrow
+    .filter(p => new Date(p.timestamp).toDateString() === currentProcessingDate)
     .map(p => {
       const pMs = toMs(p.timestamp);
       const time = Utilities.formatDate(new Date(pMs), CONFIG.TIMEZONE, CONFIG.TIME_FORMAT);
       
       const hM = hums.reduce((prev, curr) => Math.abs(toMs(curr.timestamp)-pMs) < Math.abs(toMs(prev.timestamp)-pMs) ? curr : prev, hums[0]);
       const sM = settings.find(s => pMs >= toMs(s.from) && pMs < toMs(s.to));
-      const heatM = heat.find(h => pMs >= toMs(h.from) && pMs < toMs(h.to));
+      const heatM = heat.find(h => pMs >= toMs(h.from) && pMs < toMs(h.to)); 
       const wM = weather.find(w => pMs >= toMs(w.from) && pMs < toMs(w.to));
       const solarM = solar.reduce((prev, curr) => Math.abs(toMs(curr.timestamp)-pMs) < Math.abs(toMs(prev.timestamp)-pMs) ? curr : prev, solar[0]);
 
       return [
         CONFIG.ZONE_ID, CONFIG.ZONE_NAME, dateStr, time, 
         p.value.celsius, hM ? (hM.value * 100).toFixed(1) : "N/A",
-        sM ? (sM.value.temperature?.celsius || "OFF") : "N/A",
+        sM ? (sM.value.temperature?.celsius || "OFF") : "N/A", 
         heatM ? heatM.value : "NONE",
-        wM ? wM.value.temperature.celsius : "N/A",
-        solarM ? solarM.value.percentage + "%" : "0%",
+        wM ? wM.value.temperature.celsius : "N/A", 
+        solarM ? solarM.value.percentage + "%" : "0%", 
         wM ? wM.value.state : "N/A", 
         mode
       ];
     });
-  
-  const masterHeaders = ["ZONE ID", "ZONE NAME", "DATE", "TIME", "TEMP (C)", "HUM %", "SETPOINT", "HEATING", "EXT TEMP", "SOLAR %", "WEATHER", "SOURCE"];
-  saveToSheet(ss, "Measured Data", masterHeaders, unifiedRows);
+  saveToSheet(ss, "Measured Data", ["ZONE ID", "ZONE NAME", "DATE", "TIME", "TEMP (C)", "HUM %", "SETPOINT", "HEATING", "EXT TEMP", "SOLAR %", "WEATHER", "SOURCE"], unifiedRows);
 
-  // 2. GENERATE INTERVAL SHEETS (Also filtered by date)
-  // For intervals, we check if the 'from' or 'to' date matches the target date
-  const filterInterval = (item) => new Date(item.from).toDateString() === currentProcessingDate;
+  const filterInterval = (item) => new Date(item.from).toDateString() === currentProcessingDate; 
 
-const settingsRows = settings.filter(filterInterval).map(s => [
-    s.value.type,
-    s.value.temperature ? s.value.temperature.celsius : "-",
-    formatTadoDate(s.from), // Col C: FROM formateado
-    formatTadoDate(s.to),   // Col D: TO formateado
-    mode
+  // 2. SETTINGS (Fechas formateadas)
+  const settingsRows = settings.filter(filterInterval).map(s => [
+    CONFIG.ZONE_ID, CONFIG.ZONE_NAME, formatTadoDate(s.from), formatTadoDate(s.to), s.value.type, s.value.temperature?.celsius || "OFF", mode 
   ]);
-  saveToSheet(ss, "Settings", ["ZONE ID", "ZONE NAME", "FROM", "TO", "TYPE", "SETPOINT", "SOURCE"], settingsRows);
+  saveToSheet(ss, "Settings", ["ZONE ID", "ZONE NAME", "FROM", "TO", "TYPE", "SETPOINT", "SOURCE"], settingsRows); 
 
-const heatRows = heat.filter(filterInterval).map(c => [
-    c.value,
-    formatTadoDate(c.from), // Col B: FROM formateado
-    formatTadoDate(c.to),   // Col C: TO formateado
-    mode
-  ]);
-  saveToSheet(ss, "Call For Heat", ["ZONE ID", "ZONE NAME", "FROM", "TO", "DEMAND", "SOURCE"], heatRows);
+  // 3. CALL FOR HEAT (Fechas formateadas)
+  const callForHeatRows = heat.filter(filterInterval).map(h => [
+    CONFIG.ZONE_ID, CONFIG.ZONE_NAME, formatTadoDate(h.from), formatTadoDate(h.to), h.value, mode  ]);
+  saveToSheet(ss, "Call For Heat", ["ZONE ID", "ZONE NAME", "FROM", "TO", "DEMAND", "SOURCE"], callForHeatRows); 
 
+  // 4. WEATHER (6 Columnas, sin la columna DATE inicial redundante)
   const weatherRows = weather.filter(filterInterval).map(w => {
     const wMs = toMs(w.from);
-    const sMatch = solar.reduce((prev, curr) => Math.abs(toMs(curr.timestamp)-wMs) < Math.abs(toMs(prev.timestamp)-wMs) ? curr : prev, solar[0]);
+    const sMatch = solar.reduce((prev, curr) => Math.abs(toMs(curr.timestamp)-wMs) < Math.abs(toMs(prev.timestamp)-pMs) ? curr : prev, solar[0]);
     return [
-      formatTadoDate(w.from), // Col A: FROM (Ahora la clave principal)
-      formatTadoDate(w.to),   // Col B: TO
+      formatTadoDate(w.from), // Col A: FROM limpio
+      formatTadoDate(w.to),   // Col B: TO limpio
       w.value.state, 
       w.value.temperature.celsius, 
       sMatch ? sMatch.value.percentage + "%" : "0%", 
       mode
-    ];
+    ]; 
   });
-  saveToSheet(ss, "Weather", ["DATE", "FROM", "TO", "STATE", "OUTSIDE TEMP", "SOLAR %", "SOURCE"], weatherRows);
+  saveToSheet(ss, "Weather", ["FROM", "TO", "STATE", "OUTSIDE TEMP", "SOLAR %", "SOURCE"], weatherRows); 
 }
+
 
 /** --- UTILS --- **/
 
@@ -146,39 +140,26 @@ function saveToSheet(ss, name, headers, newRows) {
   const lastRow = sheet.getLastRow();
   let filteredRows = newRows;
 
-  // 1. Filtrado de duplicados para no repetir datos
   if (lastRow > 1) {
-    const checkCol = (name === "Weather") ? 1 : 3; // Columna de referencia temporal
+    // Weather usa Col 1 (FROM) para duplicados, las demás la Col 3 (DATE/FROM)
+    const checkCol = (name === "Weather") ? 1 : 3;
     const existingData = sheet.getRange(2, checkCol, lastRow - 1, 1).getValues();
     const existingKeys = new Set(existingData.map(r => String(r[0])));
     filteredRows = newRows.filter(r => !existingKeys.has(String(r[checkCol - 1])));
   }
 
   if (filteredRows.length > 0) {
-    // 2. Insertar los nuevos datos al final
     sheet.getRange(sheet.getLastRow() + 1, 1, filteredRows.length, filteredRows[0].length).setValues(filteredRows);
     
-    // 3. LOGICA DE ORDENACIÓN INVERSA (Más nuevo arriba)
+    // Ordenar: Más nuevo arriba (Descendente)
     let sortCriteria = [];
-    
     if (name === "Measured Data") {
-      // Prioridad 1: Fecha (Col 3) Descendente, Prioridad 2: Hora (Col 4) Descendente
-      sortCriteria = [
-        {column: 3, ascending: false},
-        {column: 4, ascending: false}
-      ];
-    } else if (name === "Weather") {
-      // Prioridad 1: From (Col 1) Descendente
-      sortCriteria = [{column: 1, ascending: false}];
+      sortCriteria = [{column: 3, ascending: false}, {column: 4, ascending: false}];
     } else {
-      // Settings y Call for Heat: Prioridad 1: From (Col 3) Descendente
-      sortCriteria = [{column: 3, ascending: false}];
+      const sortCol = (name === "Weather") ? 1 : 3;
+      sortCriteria = [{column: sortCol, ascending: false}];
     }
-    
-    // Aplicar el ordenado a toda la hoja (menos cabecera)
     sheet.getRange(2, 1, sheet.getLastRow() - 1, sheet.getLastColumn()).sort(sortCriteria);
-    
-    console.log(`✅ [${name}] Sincronizada: ${filteredRows.length} filas nuevas. (Orden: Más nuevo arriba)`);
   }
 }
 
@@ -209,20 +190,21 @@ function resetHistoryProgress() {
 
 
 
+
 function formatTadoDate(isoString) {
-  if (!isoString) return "";
-  return Utilities.formatDate(new Date(isoString), CONFIG.TIMEZONE, "yyyy-MM-dd HH:mm:ss");
+  if (!isoString || isoString === "") return "";
+  const d = new Date(isoString);
+  if (isNaN(d.getTime())) return isoString; 
+  return Utilities.formatDate(d, CONFIG.TIMEZONE, "yyyy-MM-dd HH:mm:ss");
 }
 
-function onOpen() {
-  const ui = SpreadsheetApp.getUi();
-  ui.createMenu('🛠️ Tado Tools')
-      .addItem('🔍 Verificar Duplicados (Dry Run)', 'cleanAllSheetsDryRun')
-      .addItem('🚀 Limpiar Hojas (Effective)', 'cleanAllSheetsEffective')
-      .addSeparator()
-      .addItem('🔄 Resetear Progreso Histórico', 'resetHistoryProgress')
-      .addToUi();
+function filterInterval(interval) {
+  return interval && interval.from && interval.to;
 }
+
+
+
+
 
 /**
  * --- UNIVERSAL CLEANUP TOOLS WITH DETAILED LOGGING AND CELL REFERENCES ---
@@ -243,18 +225,19 @@ function cleanAllSheetsEffective() {
 function runUniversalCleanup(isDryRun) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sheetsConfig = [
-    // Todas configuradas con ascending: false (Más nuevo arriba)
+    // CONFIGURACIÓN PARA EL PRIMER CASO: FECHA > HORA
     { name: "Measured Data", keyCols: [2, 3], sortCols: [{col: 3, asc: false}, {col: 4, asc: false}] },
     { name: "Settings",      keyCols: [2, 3], sortCols: [{col: 3, asc: false}, {col: 4, asc: false}] },
     { name: "Call For Heat", keyCols: [2, 3], sortCols: [{col: 3, asc: false}, {col: 4, asc: false}] },
-    { name: "Weather",       keyCols: [0, 1], sortCols: [{col: 0, asc: false}] }
+    { name: "Weather",       keyCols: [1, 2], sortCols: [{col: 2, asc: false}, {col: 3, asc: false}] }
   ];
 
   sheetsConfig.forEach(conf => {
     const sheet = ss.getSheetByName(conf.name);
     if (!sheet) return;
 
-    const fullData = sheet.getDataRange().getValues();
+    const range = sheet.getDataRange();
+    const fullData = range.getValues();
     if (fullData.length <= 1) return;
 
     const headers = fullData[0];
@@ -266,68 +249,44 @@ function runUniversalCleanup(isDryRun) {
 
     dataRows.forEach((row, index) => {
       const currentRowNum = index + 2;
+      
       const keyParts = conf.keyCols.map(idx => {
         let val = row[idx];
-        if (val instanceof Date) return Utilities.formatDate(val, CONFIG.TIMEZONE, "yyyy-MM-dd HH:mm:ss");
-        return String(val).trim();
+        if (val instanceof Date) {
+          let format = (idx === 2 || (conf.name === "Weather" && idx === 1)) ? "yyyy-MM-dd" : "HH:mm:ss";
+          return Utilities.formatDate(val, CONFIG.TIMEZONE, format);
+        }
+        return String(val).trim(); 
       });
+      
       const key = keyParts.join(" | ");
+
+      if (!key || key === " | ") {
+        uniqueRows.push(row);
+        return;
+      }
 
       if (!seenKeys.has(key)) {
         seenKeys.set(key, currentRowNum);
         uniqueRows.push(row);
       } else {
-        if (!duplicatesLog[key]) duplicatesLog[key] = { kept: seenKeys.get(key), removed: [] };
+        if (!duplicatesLog[key]) {
+          duplicatesLog[key] = { kept: seenKeys.get(key), removed: [] };
+        }
         duplicatesLog[key].removed.push(currentRowNum);
       }
     });
 
     if (!isDryRun && uniqueRows.length > 0) {
-      sheet.clear();
+      sheet.clear(); 
       const finalOutput = [headers, ...uniqueRows];
       sheet.getRange(1, 1, finalOutput.length, headers.length).setValues(finalOutput);
       
-      // Aplicar ordenado descendente
+      // APLICACIÓN DEL ORDENADO CORRECTO
       const sortCriteria = conf.sortCols.map(s => ({column: s.col + 1, ascending: s.asc}));
       sheet.getRange(2, 1, uniqueRows.length, headers.length).sort(sortCriteria);
+      
+      console.log(`✅ [${conf.name}] Ordenada por Día y luego por Hora.`);
     }
   });
 }
-
-
-
-  function fixWeatherSheetOnce() {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const sheet = ss.getSheetByName("Weather");
-  if (!sheet) return;
-
-  const data = sheet.getDataRange().getValues();
-  if (data.length <= 1) return;
-
-  const headers = ["FROM", "TO", "STATE", "OUTSIDE TEMP", "SOLAR %", "SOURCE"];
-  const oldRows = data.slice(1);
-  
-  const fixedRows = oldRows.map(row => {
-    // Si la hoja tiene 7 columnas, la fecha repetida está en la 1 (index 0)
-    // Nosotros queremos empezar desde FROM y TO.
-    let offset = (row.length >= 7) ? 1 : 0; 
-    
-    return [
-      formatTadoDate(row[offset]),     // Nueva Col A: FROM
-      formatTadoDate(row[offset + 1]), // Nueva Col B: TO
-      row[offset + 2],                 // STATE
-      row[offset + 3],                 // TEMP
-      row[offset + 4],                 // SOLAR
-      row[offset + 5]                  // SOURCE
-    ];
-  });
-
-  sheet.clear();
-  sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
-  sheet.getRange(2, 1, fixedRows.length, headers.length).setValues(fixedRows);
-  
-  // Ordenar cronológico (Antiguo arriba)
-  sheet.getRange(2, 1, fixedRows.length, headers.length).sort({column: 1, ascending: true});
-  
-  SpreadsheetApp.getActiveSpreadsheet().toast("Weather corregido a 6 columnas", "✅");
-  }
