@@ -29,19 +29,45 @@ function dailySync() {
  */
 function historicalSync() {
   const props = PropertiesService.getScriptProperties();
-  let lastDate = props.getProperty("LAST_RECOVERED_DATE") || 
-                 Utilities.formatDate(new Date(new Date().getTime() - 2 * 24 * 60 * 60 * 1000), CONFIG.TIMEZONE, CONFIG.DATE_FORMAT);
+  
+  // Si no hay fecha guardada, empezamos en "antes de ayer"
+  let lastDateStr = props.getProperty("LAST_PROCESSED_DATE");
+  let lastDate;
 
-  let currentDate = new Date(lastDate);
-  let limitDate = new Date(CONFIG.HISTORY_LIMIT_DATE);
+  if (!lastDateStr) {
+    // Antes de ayer
+    lastDate = new Date();
+    lastDate.setDate(lastDate.getDate() - 2);
+  } else {
+    lastDate = new Date(lastDateStr);
+  }
+
+  // Límite histórico (la fecha más antigua que queremos recuperar)
+  const limitDate = new Date(CONFIG.HISTORY_LIMIT_DATE);
+
+  console.log("Iniciando recuperación histórica hacia atrás desde: " + lastDate.toDateString());
 
   for (let i = 0; i < CONFIG.DAYS_PER_HISTORY_BATCH; i++) {
-    if (currentDate < limitDate) break;
-    let fStr = Utilities.formatDate(currentDate, CONFIG.TIMEZONE, CONFIG.DATE_FORMAT);
-    processAndSave(fStr, "BOTTOM");
-    currentDate.setDate(currentDate.getDate() - 1);
-    props.setProperty("LAST_RECOVERED_DATE", Utilities.formatDate(currentDate, CONFIG.TIMEZONE, CONFIG.DATE_FORMAT));
-    Utilities.sleep(1500); 
+    // Si ya llegamos a la fecha límite antigua, paramos
+    if (lastDate < limitDate) {
+      console.log("✅ Historial completado hasta el límite definido.");
+      break;
+    }
+
+    const dateStr = Utilities.formatDate(lastDate, CONFIG.TIMEZONE, CONFIG.DATE_FORMAT);
+    
+    try {
+      processAndSave(dateStr, "HIST");
+      
+      // RESTAMOS un día para ir hacia el pasado
+      lastDate.setDate(lastDate.getDate() - 1);
+      
+      // Guardamos la siguiente fecha a procesar
+      props.setProperty("LAST_PROCESSED_DATE", Utilities.formatDate(lastDate, CONFIG.TIMEZONE, CONFIG.DATE_FORMAT));
+    } catch (e) {
+      console.error("❌ Error procesando " + dateStr + ": " + e.message);
+      break;
+    }
   }
 }
 
@@ -52,78 +78,83 @@ function historicalSync() {
  * UPDATED CORE PROCESSING LOGIC (With Boundary Filtering)
  */
 function processAndSave(dateStr, mode) {
-  // USAMOS TU FUNCIÓN REAL: getAccessToken
   const token = getAccessToken();
-  
-  // Llamada a fetchTadoData con la fecha y el token [cite: 10, 40]
   const data = fetchTadoData(dateStr, token);
-  if (!data) return; 
+  
+  // 1. Verificación de seguridad inicial
+  if (!data || !data.measuredData) {
+    console.warn("⚠️ No hay datos disponibles para la fecha: " + dateStr);
+    return;
+  }
 
   const ss = SpreadsheetApp.getActiveSpreadsheet();
-  
-  const temps = data.measuredData?.insideTemperature?.dataPoints || []; 
-  const hums = data.measuredData?.humidity?.dataPoints || []; 
-  const settings = data.settings?.dataIntervals || []; 
-  const heat = data.callForHeat?.dataIntervals || []; 
-  const weather = data.weather?.condition?.dataIntervals || []; 
-  const solar = data.weather?.solarIntensity?.dataPoints || []; 
-  
-  const toMs = (iso) => new Date(iso).getTime();
-  const currentProcessingDate = new Date(dateStr).toDateString(); 
+  const toMs = (iso) => iso ? new Date(iso).getTime() : 0;
+  const currentProcessingDate = new Date(dateStr).toDateString();
 
-  // 1. GENERATE MASTER SHEET
+  // Extraer bloques con protección ante nulos
+  const temps = data.measuredData?.insideTemperature?.dataPoints || [];
+  const hums = data.measuredData?.humidity?.dataPoints || [];
+  const settings = data.settings?.dataIntervals || [];
+  const heat = data.callForHeat?.dataIntervals || [];
+  const weather = data.weather?.condition?.dataIntervals || [];
+  const solar = data.weather?.solarIntensity?.dataPoints || [];
+
+  // 2. GENERATE MASTER SHEET (Con protección en cada campo)
   const unifiedRows = temps
-    .filter(p => new Date(p.timestamp).toDateString() === currentProcessingDate)
+    .filter(p => p.timestamp && new Date(p.timestamp).toDateString() === currentProcessingDate)
     .map(p => {
       const pMs = toMs(p.timestamp);
       const time = Utilities.formatDate(new Date(pMs), CONFIG.TIMEZONE, CONFIG.TIME_FORMAT);
       
       const hM = hums.reduce((prev, curr) => Math.abs(toMs(curr.timestamp)-pMs) < Math.abs(toMs(prev.timestamp)-pMs) ? curr : prev, hums[0]);
       const sM = settings.find(s => pMs >= toMs(s.from) && pMs < toMs(s.to));
-      const heatM = heat.find(h => pMs >= toMs(h.from) && pMs < toMs(h.to)); 
+      const heatM = heat.find(h => pMs >= toMs(h.from) && pMs < toMs(h.to));
       const wM = weather.find(w => pMs >= toMs(w.from) && pMs < toMs(w.to));
       const solarM = solar.reduce((prev, curr) => Math.abs(toMs(curr.timestamp)-pMs) < Math.abs(toMs(prev.timestamp)-pMs) ? curr : prev, solar[0]);
 
       return [
         CONFIG.ZONE_ID, CONFIG.ZONE_NAME, dateStr, time, 
-        p.value.celsius, hM ? (hM.value * 100).toFixed(1) : "N/A",
-        sM ? (sM.value.temperature?.celsius || "OFF") : "N/A", 
-        heatM ? heatM.value : "NONE",
-        wM ? wM.value.temperature.celsius : "N/A", 
-        solarM ? solarM.value.percentage + "%" : "0%", 
-        wM ? wM.value.state : "N/A", 
+        p.value?.celsius ?? "N/A", 
+        hM?.value ? (hM.value * 100).toFixed(1) : "N/A",
+        sM?.value?.temperature?.celsius ?? "OFF",
+        heatM?.value ?? "NONE",
+        wM?.value?.temperature?.celsius ?? "N/A", // <--- PROTECCIÓN AQUÍ
+        solarM?.value?.percentage ? solarM.value.percentage + "%" : "0%",
+        wM?.value?.state ?? "N/A",                // <--- PROTECCIÓN AQUÍ
         mode
       ];
     });
-  saveToSheet(ss, "Measured Data", ["ZONE ID", "ZONE NAME", "DATE", "TIME", "TEMP (C)", "HUM %", "SETPOINT", "HEATING", "EXT TEMP", "SOLAR %", "WEATHER", "SOURCE"], unifiedRows);
+  
+  if (unifiedRows.length > 0) {
+    saveToSheet(ss, "Measured Data", ["ZONE ID", "ZONE NAME", "DATE", "TIME", "TEMP (C)", "HUM %", "SETPOINT", "HEATING", "EXT TEMP", "SOLAR %", "WEATHER", "SOURCE"], unifiedRows);
+  }
 
-  const filterInterval = (item) => new Date(item.from).toDateString() === currentProcessingDate; 
+  // 3. INTERVALOS (Settings, Heat, Weather) con protección de fecha
+  const filterInterval = (item) => item && item.from && new Date(item.from).toDateString() === currentProcessingDate;
 
-  // 2. SETTINGS (Fechas formateadas)
   const settingsRows = settings.filter(filterInterval).map(s => [
-    CONFIG.ZONE_ID, CONFIG.ZONE_NAME, formatTadoDate(s.from), formatTadoDate(s.to), s.value.type, s.value.temperature?.celsius || "OFF", mode 
+    CONFIG.ZONE_ID, CONFIG.ZONE_NAME, formatTadoDate(s.from), formatTadoDate(s.to), s.value?.type || "N/A", s.value?.temperature?.celsius || "OFF", mode
   ]);
-  saveToSheet(ss, "Settings", ["ZONE ID", "ZONE NAME", "FROM", "TO", "TYPE", "SETPOINT", "SOURCE"], settingsRows); 
+  saveToSheet(ss, "Settings", ["ZONE ID", "ZONE NAME", "FROM", "TO", "TYPE", "SETPOINT", "SOURCE"], settingsRows);
 
-  // 3. CALL FOR HEAT (Fechas formateadas)
   const callForHeatRows = heat.filter(filterInterval).map(h => [
-    CONFIG.ZONE_ID, CONFIG.ZONE_NAME, formatTadoDate(h.from), formatTadoDate(h.to), h.value, mode  ]);
-  saveToSheet(ss, "Call For Heat", ["ZONE ID", "ZONE NAME", "FROM", "TO", "DEMAND", "SOURCE"], callForHeatRows); 
+    CONFIG.ZONE_ID, CONFIG.ZONE_NAME, formatTadoDate(h.from), formatTadoDate(h.to), h.value ?? "N/A", mode
+  ]);
+  saveToSheet(ss, "Call For Heat", ["ZONE ID", "ZONE NAME", "FROM", "TO", "DEMAND", "SOURCE"], callForHeatRows);
 
-  // 4. WEATHER (6 Columnas, sin la columna DATE inicial redundante)
   const weatherRows = weather.filter(filterInterval).map(w => {
     const wMs = toMs(w.from);
-    const sMatch = solar.reduce((prev, curr) => Math.abs(toMs(curr.timestamp)-wMs) < Math.abs(toMs(prev.timestamp)-pMs) ? curr : prev, solar[0]);
+    const solarM = solar.reduce((prev, curr) => Math.abs(toMs(curr.timestamp)-wMs) < Math.abs(toMs(prev.timestamp)-wMs) ? curr : prev, solar[0]);
     return [
-      formatTadoDate(w.from), // Col A: FROM limpio
-      formatTadoDate(w.to),   // Col B: TO limpio
-      w.value.state, 
-      w.value.temperature.celsius, 
-      sMatch ? sMatch.value.percentage + "%" : "0%", 
+      formatTadoDate(w.from), 
+      formatTadoDate(w.to), 
+      w.value?.state || "N/A", 
+      w.value?.temperature?.celsius || "N/A", 
+      solarM?.value?.percentage ? solarM.value.percentage + "%" : "0%", 
       mode
-    ]; 
+    ];
   });
-  saveToSheet(ss, "Weather", ["FROM", "TO", "STATE", "OUTSIDE TEMP", "SOLAR %", "SOURCE"], weatherRows); 
+  saveToSheet(ss, "Weather", ["FROM", "TO", "STATE", "OUTSIDE TEMP", "SOLAR %", "SOURCE"], weatherRows);
 }
 
 
@@ -289,4 +320,22 @@ function runUniversalCleanup(isDryRun) {
       console.log(`✅ [${conf.name}] Ordenada por Día y luego por Hora.`);
     }
   });
+}
+
+/**
+ * HELPER: Configura una fecha específica para empezar la descarga histórica.
+ * Puedes ejecutar esto directamente desde el editor de Google Apps Script.
+ */
+function setHistoricalStartDate() {
+  // --- CONFIGURA AQUÍ LA FECHA DESEADA (Formato AAAA-MM-DD) ---
+  const fechaDeseada = "2024-12-26"; 
+  // -----------------------------------------------------------
+
+  const props = PropertiesService.getScriptProperties();
+  props.setProperty("LAST_PROCESSED_DATE", fechaDeseada);
+  
+  // Usamos console.log en lugar de getUi().alert() para evitar el error en el editor
+  console.log("✅ Fecha configurada correctamente.");
+  console.log("📅 El historial comenzará en: " + fechaDeseada);
+  console.log("💡 Ahora ya puedes ejecutar la función 'historicalSync'.");
 }
